@@ -92,7 +92,7 @@ function ConvertTo-ADMXtoDSC
             }
             foreach ($item in $current)
             {
-                if ($item.ValueName -ne $null)
+                if ($item.ValueName -ne $null -or $item.PolicyState -eq "Delete")
                 {
                     [array]$returnVal += $item
                 }
@@ -125,7 +125,7 @@ function ConvertTo-ADMXtoDSC
             Write-Verbose "Saving config to $outputFile"
             "Configuration `"$gpo`"" | out-file -FilePath $outputFile -Encoding unicode
             '{' | out-file -FilePath $outputFile -Append -Encoding unicode
-            "   Import-DscResource –ModuleName PSDesiredStateConfiguration" | out-file -Append -FilePath $outputFile -Encoding unicode
+            "   Import-DscResource â€“ModuleName PSDesiredStateConfiguration" | out-file -Append -FilePath $outputFile -Encoding unicode
             'Node localhost' | out-file -FilePath $outputFile -Append -Encoding unicode
             '  {' | out-file -FilePath $outputFile -Append -Encoding unicode
             foreach ($regItem in $policies)
@@ -135,28 +135,44 @@ function ConvertTo-ADMXtoDSC
                      continue
                 }
                 #this next bit guarantees a unique DSC resource name by adding each registry resource name to a hashtable. If found, we increment the key index and append to resource name
+                if ($regItem.HasValue -eq $true) {$ValueName = $regItem.ValueName} else {$ValueName = $regItem.FullKeyPath -split '\\' | Select-Object -Last 1}
+                if ($regItem.HasValue -eq $true) {$ResourceID = $regItem.FullKeyPath + '\\' + $regItem.ValueName} else {$ResourceID = $regItem.FullKeyPath}
                 $resourceName = ""
-                if ($script:valueNameHashTable.ContainsKey($regItem.ValueName))
+                if ($script:FullPathHashTable.ContainsKey($regItem.FullKeyPath))
                 {
-                    $script:valueNameHashTable[$regItem.ValueName] = $script:valueNameHashTable[$regItem.ValueName]+1
-                    $resourceName = $regItem.ValueName+$script:valueNameHashTable[$regItem.ValueName]
+                     continue
+                }
+                elseif ($script:valueNameHashTable.ContainsKey($ValueName))
+                {
+                    $script:valueNameHashTable[$ValueName] = $script:valueNameHashTable[$ValueName]+1
+                    $script:FullPathHashTable.Add($regItem.FullKeyPath,0)
+                    $resourceName = $ValueName+$script:valueNameHashTable[$ValueName]
                 }
                 else
                 {
-                    $script:valueNameHashTable.Add($regItem.ValueName,0)
-                    $resourceName = $regItem.ValueName
-                }
+                    $script:valueNameHashTable.Add($ValueName,0)
+                    $script:FullPathHashTable.Add($regItem.FullKeyPath,0)
+                    $resourceName = $ValueName
+                }                
                 # now build the resources
                 # exploring other ways to create the resource info.
                 # added unicode encoding to valuename and data to support that type for certain policies (e.g. SRP/Applocker)
                 "    Registry '" + $resourceName + "'"| out-file -FilePath $outputFile -Append -Encoding unicode
                 '    {' | out-file -FilePath $outputFile -Append -Encoding unicode
-                "      Ensure = 'Present'" | out-file -FilePath $outputFile -Append -Encoding unicode
+                if ($regItem.PolicyState -ne "Delete")
+                {
+                    "      Ensure = 'Present'" | out-file -FilePath $outputFile -Append -Encoding unicode
+                }
+                else
+                {
+                    "      Ensure = 'Absent'" | out-file -FilePath $outputFile -Append -Encoding unicode
+                }
                 "      Key = '"+ $regItem.FullKeyPath + "'"| out-file -FilePath $outputFile -Append -Encoding unicode
                 "      ValueName = '" + $regItem.ValueName + "'" | out-file -FilePath $outputFile -Append -Encoding unicode
-                "      ValueType = '" +$regItem.Type + "'" | out-file -FilePath $outputFile -Append -Encoding unicode
+                if ($regItem.Type -ne "Unknown"){"      ValueType = '" +$regItem.Type + "'" | out-file -FilePath $outputFile -Append -Encoding unicode}
                 # need to trim any nul characters from ValueData (mostly an Applocker issue)
-                $trimValue = $regItem.Value.ToString().Trim("`0")
+                if ($regItem.Type -eq 'Binary'){$trimValue = $regItem.Value -join ""}
+                elseif ($regItem.Value -ne $null) {$trimValue = $regItem.Value.ToString().Trim("`0")}
                 "      ValueData = '" +$trimValue + "'"| out-file -FilePath $outputFile -Append -Encoding unicode
                 '    }' | out-file -FilePath $outputFile -Append -Encoding unicode
             }
@@ -170,7 +186,7 @@ function ConvertTo-ADMXtoDSC
     {
         #this hash table holds valuename, which we use to name registry resources--guarantees that they are unique
         $script:valueNameHashTable = @{}
-       
+        $script:FullPathHashTable = @{}
         Write-Verbose "Analyzing GPO $gponame and saving results to $outputfolder"
         ADMToDSC -gpo $gpoName -path $outputFolder
         #ISE "$outputfolder\$gponame.ps1"
@@ -180,4 +196,3 @@ function ConvertTo-ADMXtoDSC
         Write-Verbose "Ending: $($MyInvocation.Mycommand)"
     } #end
 }
-
